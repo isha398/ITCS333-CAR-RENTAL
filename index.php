@@ -2,153 +2,210 @@
 include_once dirname(__DIR__) . '/config/config.php';
 session_start();
 
-// Admin access check
-if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'admin') {
+if (!isset($_SESSION['user'])) {
     header('Location: ' . BASE_URL . '/login');
     exit();
 }
 
-// Fetch rooms
+$startDate = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-d', strtotime('-30 days'));
+$endDate = isset($_GET['end_date']) ? $_GET['end_date'] : date('Y-m-d', strtotime('+30 days'));
+$userBookings = [];
+$roomStats = [];
+$timeSlots = [];
+
 try {
     $conn = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
     $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    $roomStmt = $conn->query("SELECT * FROM rooms ORDER BY room_id DESC");
-    $rooms = $roomStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $commentStmt = $conn->prepare("
-        SELECT c.*, u.username, r.roomtitle 
-        FROM comments c 
-        JOIN users u ON c.user_id = u.id 
-        JOIN rooms r ON c.room_id = r.room_id 
-        ORDER BY c.created_at DESC 
-        LIMIT 5
+    $roomStatsStmt = $conn->prepare("
+        SELECT 
+            r.roomtitle, 
+            r.room_id,
+            COUNT(b.id) as total_bookings,
+            COUNT(DISTINCT b.user_id) as unique_users,
+            COALESCE(SUM(b.duration), 0) as total_hours
+        FROM rooms r
+        LEFT JOIN bookings b ON r.room_id = b.room_id 
+        WHERE (:start_date IS NULL OR DATE(b.check_in) >= :start_date)
+        AND (:end_date IS NULL OR DATE(b.check_in) <= :end_date)
+        GROUP BY r.room_id, r.roomtitle
+        ORDER BY total_bookings DESC, r.roomtitle ASC
     ");
-    $commentStmt->execute();
-    $recentComments = $commentStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch(PDOException $e) {
+    
+    $roomStatsStmt->bindParam(':start_date', $startDate);
+    $roomStatsStmt->bindParam(':end_date', $endDate);
+    $roomStatsStmt->execute();
+    $roomStats = $roomStatsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $availableSlots = [
+        '09:00', '10:00', '11:00', '12:00',
+        '13:00', '14:00', '15:00', '16:00'
+    ];
+
+    $slotStmt = $conn->prepare("
+        SELECT 
+            time_slot,
+            COUNT(*) as slot_count
+        FROM bookings
+        GROUP BY time_slot
+        ORDER BY CAST(time_slot AS TIME)
+    ");
+    $slotStmt->execute();
+    $dbSlots = $slotStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Create time slots array with counts
+    $slotCounts = array_column($dbSlots, 'slot_count', 'time_slot');
+    $timeSlots = array_map(function($slot) use ($slotCounts) {
+        return [
+            'time_slot' => $slot,
+            'slot_count' => $slotCounts[$slot] ?? 0
+        ];
+    }, $availableSlots);
+
+
+        $bookingStmt = $conn->prepare("
+            SELECT 
+                b.*,
+                r.roomtitle,
+                DATE_FORMAT(b.check_in, '%Y-%m-%d %H:%i') as start_time,
+                DATE_FORMAT(b.check_out, '%Y-%m-%d %H:%i') as end_time,
+                b.duration
+            FROM bookings b
+            JOIN rooms r ON b.room_id = r.room_id
+            WHERE b.user_id = :user_id
+            ORDER BY b.check_in DESC
+            LIMIT 10
+        ");
+        
+        $userId = $_SESSION['user']['id'];
+        $bookingStmt->bindParam(':user_id', $userId, PDO::PARAM_INT);
+        $bookingStmt->execute();
+        $userBookings = $bookingStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+
+} catch (PDOException $e) {
     die("Connection failed: " . $e->getMessage());
 }
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Dashboard</title>
+    <title>Analytics Dashboard</title>
     <link rel="stylesheet" href="../styles/main.css">
 </head>
+
 <body>
     <?php include_once '../components/navbar.php'; ?>
 
-    <div class="admin-container">
-        <div class="admin-header">
-            <h1>Admin Dashboard</h1>
-            <button onclick="showAddRoomForm()" class="add-room-btn">Add New Room</button>
-        </div>
-
-        <div id="roomForm" class="modal hidden">
-            <div class="modal-content">
-                <form action="process_room.php" method="POST" enctype="multipart/form-data">
-                    <input type="hidden" name="room_id" id="roomId">
-                    <div class="form-group">
-                        <label>Room Title</label>
-                        <input type="text" name="roomtitle" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Price per Hour</label>
-                        <input type="number" name="roomprice" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Seats</label>
-                        <input type="number" name="roomseats" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Projectors</label>
-                        <input type="number" name="roomprojectors" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Room Image</label>
-                        <input type="file" name="roomimage" accept="image/*">
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit">Save Room</button>
-                        <button type="button" onclick="hideRoomForm()">Cancel</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
-        <div class="admin-grid">
-            <div class="rooms-section">
-                <h2>Room Management</h2>
-                <div class="rooms-list">
-                    <?php foreach($rooms as $room): ?>
-                        <div class="room-card">
-                            <img src="<?php echo BASE_URL . '/' . $room['roomimage']; ?>" alt="Room image">
-                            <div class="room-info">
-                                <h3><?php echo htmlspecialchars($room['roomtitle']); ?></h3>
-                                <p>Price: $<?php echo htmlspecialchars($room['roomprice']); ?>/hour</p>
-                                <p>Seats: <?php echo htmlspecialchars($room['roomseats']); ?></p>
-                                <p>Projectors: <?php echo htmlspecialchars($room['roomprojectors']); ?></p>
-                            </div>
-                            <div class="room-actions">
-                                <button onclick="editRoom(<?php echo htmlspecialchars(json_encode($room)); ?>)" 
-                                        class="edit-btn">Edit</button>
-                                <button onclick="deleteRoom(<?php echo $room['room_id']; ?>)" 
-                                        class="delete-btn">Delete</button>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
+    <div class="analytics-container">
+        <div class="filters">
+            <form method="GET" class="date-filter">
+                <div class="form-group">
+                    <label>Start Date</label>
+                    <input type="date" name="start_date" value="<?php echo $startDate; ?>">
                 </div>
-            </div>
-
-            <div class="comments-section">
-                <h2>Recent Comments</h2>
-                <div class="comments-list">
-                    <?php foreach($recentComments as $comment): ?>
-                        <div class="comment-card">
-                            <div class="comment-header">
-                                <strong><?php echo htmlspecialchars($comment['username']); ?></strong>
-                                <span>on <?php echo htmlspecialchars($comment['roomtitle']); ?></span>
-                            </div>
-                            <p><?php echo htmlspecialchars($comment['comment']); ?></p>
-                            <small><?php echo date('F j, Y g:i a', strtotime($comment['created_at'])); ?></small>
-                        </div>
-                    <?php endforeach; ?>
+                <div class="form-group">
+                    <label>End Date</label>
+                    <input type="date" name="end_date" value="<?php echo $endDate; ?>">
                 </div>
-            </div>
+                <button type="submit" class="filter-btn">Apply Filter</button>
+            </form>
         </div>
+        <?php if ($_SESSION['user']['role'] === 'admin'): ?>
+        <div class="stats-card">
+            <h2>Room Usage Statistics</h2>
+            <?php if (!empty($roomStats)): ?>
+                <table class="stats-table">
+                    <thead>
+                        <tr>
+                            <th>Room Name</th>
+                            <th>Total Bookings</th>
+                            <th>Unique Users</th>
+                            <th>Total Hours</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($roomStats as $stat): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($stat['roomtitle']); ?></td>
+                                <td><?php echo $stat['total_bookings']; ?></td>
+                                <td><?php echo $stat['unique_users']; ?></td>
+                                <td><?php echo $stat['total_hours'] ?? 0; ?> hours</td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php else: ?>
+                <p class="no-data">No room statistics available for the selected period.</p>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <div class="stats-card">
+            <h2>Popular Time Slots</h2>
+            <?php if (!empty($timeSlots)):
+                $maxBookings = max(array_column($timeSlots, 'slot_count')); ?>
+                <table class="stats-table">
+                    <thead>
+                        <tr>
+                            <th>Time Slot</th>
+                            <th>Number of Bookings</th>
+                            <th>Popularity</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($timeSlots as $slot): ?>
+                            <tr>
+                                <td><?php echo $slot['time_slot']; ?></td>
+                                <td><?php echo $slot['slot_count']; ?></td>
+                                <td>
+                                    <div class="progress-bar">
+                                        <div class="progress" style="width: <?php
+                                        echo ($slot['slot_count'] / $maxBookings) * 100;
+                                        ?>%"></div>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php else: ?>
+                <p class="no-data">No time slot data available for the selected period.</p>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!empty($userBookings)): ?>
+            <div class="stats-card">
+                <h2>Your Recent Bookings</h2>
+                <table class="stats-table">
+                    <thead>
+                        <tr>
+                            <th>Room</th>
+                            <th>Check In</th>
+                            <th>Check Out</th>
+                            <th>Duration</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($userBookings as $booking): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($booking['roomtitle']); ?></td>
+                                <td><?php echo $booking['start_time']; ?></td>
+                                <td><?php echo $booking['end_time']; ?></td>
+                                <td><?php echo $booking['duration']; ?> hours</td>
+                                <td><?php echo strtotime($booking['check_out']) < time() ? 'Completed' : 'Upcoming'; ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
     </div>
-
-    <script>
-        function showAddRoomForm() {
-            document.getElementById('roomId').value = '';
-            document.getElementById('roomForm').classList.remove('hidden');
-        }
-
-        function hideRoomForm() {
-            document.getElementById('roomForm').classList.add('hidden');
-        }
-
-        function editRoom(room) {
-            const form = document.getElementById('roomForm');
-            form.classList.remove('hidden');
-            
-            // Populate form
-            document.getElementById('roomId').value = room.room_id;
-            form.querySelector('[name="roomtitle"]').value = room.roomtitle;
-            form.querySelector('[name="roomprice"]').value = room.roomprice;
-            form.querySelector('[name="roomseats"]').value = room.roomseats;
-            form.querySelector('[name="roomprojectors"]').value = room.roomprojectors;
-        }
-
-        function deleteRoom(roomId) {
-            if(confirm('Are you sure you want to delete this room?')) {
-                window.location.href = `process_delete_room.php?id=${roomId}`;
-            }
-        }
-    </script>
 </body>
+
 </html>
