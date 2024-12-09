@@ -2,205 +2,153 @@
 include_once dirname(__DIR__) . '/config/config.php';
 session_start();
 
-$roomId = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+// Admin access check
+if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'admin') {
+    header('Location: ' . BASE_URL . '/login');
+    exit();
+}
 
+// Fetch rooms
 try {
     $conn = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
     $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    $roomStmt = $conn->query("SELECT * FROM rooms ORDER BY room_id DESC");
+    $rooms = $roomStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Get room details
-    $stmt = $conn->prepare("SELECT * FROM rooms WHERE room_id = ?");
-    $stmt->execute([$roomId]);
-    $room = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    // Get comments
     $commentStmt = $conn->prepare("
-        SELECT c.*, u.username, u.image as user_image 
+        SELECT c.*, u.username, r.roomtitle 
         FROM comments c 
         JOIN users u ON c.user_id = u.id 
-        WHERE c.room_id = ? 
-        ORDER BY c.created_at DESC
+        JOIN rooms r ON c.room_id = r.room_id 
+        ORDER BY c.created_at DESC 
+        LIMIT 5
     ");
-    $commentStmt->execute([$roomId]);
-    $comments = $commentStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
+    $commentStmt->execute();
+    $recentComments = $commentStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch(PDOException $e) {
     die("Connection failed: " . $e->getMessage());
 }
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Room View - <?php echo htmlspecialchars($room['roomtitle']); ?></title>
+    <title>Admin Dashboard</title>
     <link rel="stylesheet" href="../styles/main.css">
 </head>
-
 <body>
     <?php include_once '../components/navbar.php'; ?>
 
-    <div class="room-container">
-        <div class="room-details">
-            <div class="room-info">
-                <img src="<?php echo BASE_URL . '/' . htmlspecialchars($room['roomimage']); ?>"
-                    alt="<?php echo htmlspecialchars($room['roomtitle']); ?>" class="room-image">
+    <div class="admin-container">
+        <div class="admin-header">
+            <h1>Admin Dashboard</h1>
+            <button onclick="showAddRoomForm()" class="add-room-btn">Add New Room</button>
+        </div>
 
-                <div class="room-specs">
-                    <h1><?php echo htmlspecialchars($room['roomtitle']); ?></h1>
-                    <div class="specs-grid">
-                        <div class="spec-item">
-                            <span class="spec-label">Price:</span>
-                            <span class="spec-value">$<?php echo htmlspecialchars($room['roomprice']); ?>/hour</span>
-                        </div>
-                        <div class="spec-item">
-                            <span class="spec-label">Seats:</span>
-                            <span class="spec-value"><?php echo htmlspecialchars($room['roomseats']); ?></span>
-                        </div>
-                        <div class="spec-item">
-                            <span class="spec-label">Projectors:</span>
-                            <span class="spec-value"><?php echo htmlspecialchars($room['roomprojectors']); ?></span>
-                        </div>
+        <div id="roomForm" class="modal hidden">
+            <div class="modal-content">
+                <form action="process_room.php" method="POST" enctype="multipart/form-data">
+                    <input type="hidden" name="room_id" id="roomId">
+                    <div class="form-group">
+                        <label>Room Title</label>
+                        <input type="text" name="roomtitle" required>
                     </div>
-                </div>
-            </div>
-
-            <div class="booking-section">
-                <h2>Book This Room</h2>
-                <?php if (isset($_SESSION['user'])): ?>
-                    <form action="process_booking.php" method="POST">
-                        <?php
-                            if (isset($_SESSION['errorbookingp'])) {
-                                echo "<div class='error-message'>" . $_SESSION['errorbookingp'] . "</div>";
-                                unset($_SESSION['errorbookingp']);
-                            }
-
-                            if (isset($_SESSION['successbooking'])) {
-                                echo "<div class='success-message'>" . $_SESSION['successbooking'] . "</div>";
-                                unset($_SESSION['successbooking']);
-                            }
-                        ?>
-                        <input type="hidden" name="room_id" value="<?php echo $room['room_id']; ?>">
-                        <div class="form-group">
-                            <label>Date</label>
-                            <input type="date" name="booking_date" required min="<?php echo date('Y-m-d'); ?>">
-                        </div>
-                        <div class="form-group">
-                            <label>Time Slot</label>
-                            <select name="time_slot" required>
-                                <option value="">Select time</option>
-                                <option value="09:00">09:00 - 10:00</option>
-                                <option value="10:00">10:00 - 11:00</option>
-                                <option value="11:00">11:00 - 12:00</option>
-                                <option value="12:00">12:00 - 13:00</option>
-                                <option value="13:00">13:00 - 14:00</option>
-                                <option value="14:00">14:00 - 15:00</option>
-                                <option value="15:00">15:00 - 16:00</option>
-                                <option value="16:00">16:00 - 17:00</option>
-                            </select>
-                        </div>
-                        <button type="submit" class="book-button">Book Now</button>
-                    </form>
-                <?php else: ?>
-                    <p class="login-prompt">Please <a href="<?php echo BASE_URL; ?>/login">login</a> to book this room.</p>
-                <?php endif; ?>
+                    <div class="form-group">
+                        <label>Price per Hour</label>
+                        <input type="number" name="roomprice" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Seats</label>
+                        <input type="number" name="roomseats" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Projectors</label>
+                        <input type="number" name="roomprojectors" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Room Image</label>
+                        <input type="file" name="roomimage" accept="image/*">
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit">Save Room</button>
+                        <button type="button" onclick="hideRoomForm()">Cancel</button>
+                    </div>
+                </form>
             </div>
         </div>
 
-        <div class="comments-section">
-            <h2>Comments</h2>
-            <?php if (isset($_SESSION['user'])): ?>
-                <form action="process_comment.php" method="POST" class="comment-form">
-                    <input type="hidden" name="room_id" value="<?php echo $room['room_id']; ?>">
-                    <textarea name="comment" required placeholder="Write your comment..."></textarea>
-                    <button type="submit" class="comment-button">Post Comment</button>
-                </form>
-            <?php endif; ?>
-
-            <div class="comments-list">
-                <?php
-                $parentComments = array_filter($comments, function ($comment) {
-                    return $comment['parent_id'] === null;
-                });
-
-                foreach ($parentComments as $comment):
-                    $replies = array_filter($comments, function ($reply) use ($comment) {
-                        return $reply['parent_id'] === $comment['id'];
-                    });
-                    ?>
-                    <div class="comment">
-                        <img src="<?php echo BASE_URL . '/' .
-                            (isset($comment['user_image']) && !empty(trim($comment['user_image']))
-                                ? $comment['user_image']
-                                : 'assets/userimages/default-profile.jpg'); ?>" alt="User profile">
-                        <div class="comment-content">
-
-                            <?php if (isset($_SESSION['user']) && ($_SESSION['user']['role'] === 'admin' || $_SESSION['user']['id'] === $comment['user_id'])): ?>
-                                <button class="delete-btn"
-                                    onclick="confirmDelete(<?php echo $comment['id']; ?>)">Delete</button>
-                            <?php endif; ?>
-
-
-                            <strong><?php echo htmlspecialchars($comment['username']); ?></strong>
-                            <p><?php echo htmlspecialchars($comment['comment']); ?></p>
-                            <small><?php echo date('F j, Y', strtotime($comment['created_at'])); ?></small>
-
-                            <?php if (isset($_SESSION['user']) && $_SESSION['user']['role'] === 'admin'): ?>
-                                <button class="reply-toggle"
-                                    onclick="toggleReplyForm(<?php echo $comment['id']; ?>)">Reply</button>
-                                <form id="replyForm-<?php echo $comment['id']; ?>" action="process_comment.php" method="POST"
-                                    class="reply-form hidden">
-                                    <input type="hidden" name="parent_id" value="<?php echo $comment['id']; ?>">
-                                    <input type="hidden" name="room_id" value="<?php echo $roomId; ?>">
-                                    <textarea name="comment" required placeholder="Write a reply..."></textarea>
-                                    <button type="submit">Post Reply</button>
-                                </form>
-                            <?php endif; ?>
-
-                            <?php foreach ($replies as $reply): ?>
-                                <div class="reply">
-
-                                    <?php if (isset($_SESSION['user']) && ($_SESSION['user']['role'] === 'admin' || $_SESSION['user']['id'] === $reply['user_id'])): ?>
-                                        <button class="delete-btn"
-                                            onclick="confirmDelete(<?php echo $reply['id']; ?>)">Delete</button>
-                                    <?php endif; ?>
-
-
-                                    <div class="reply-context">
-                                        Replying to <span><?php echo htmlspecialchars($comment['username']); ?></span>:
-                                        "<?php echo htmlspecialchars(substr($comment['comment'], 0, 60)) . (strlen($comment['comment']) > 60 ? '...' : ''); ?>"
-                                    </div>
-                                    <img src="<?php echo BASE_URL . '/' .
-                                        (isset($reply['user_image']) && !empty(trim($reply['user_image']))
-                                            ? $reply['user_image']
-                                            : 'assets/userimages/default-profile.jpg'); ?>" alt="Admin profile">
-                                    <div class="reply-content">
-                                        <strong><?php echo htmlspecialchars($reply['username']); ?> (Admin)</strong>
-                                        <p><?php echo htmlspecialchars($reply['comment']); ?></p>
-                                        <small><?php echo date('F j, Y', strtotime($reply['created_at'])); ?></small>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
+        <div class="admin-grid">
+            <div class="rooms-section">
+                <h2>Room Management</h2>
+                <div class="rooms-list">
+                    <?php foreach($rooms as $room): ?>
+                        <div class="room-card">
+                            <img src="<?php echo BASE_URL . '/' . $room['roomimage']; ?>" alt="Room image">
+                            <div class="room-info">
+                                <h3><?php echo htmlspecialchars($room['roomtitle']); ?></h3>
+                                <p>Price: $<?php echo htmlspecialchars($room['roomprice']); ?>/hour</p>
+                                <p>Seats: <?php echo htmlspecialchars($room['roomseats']); ?></p>
+                                <p>Projectors: <?php echo htmlspecialchars($room['roomprojectors']); ?></p>
+                            </div>
+                            <div class="room-actions">
+                                <button onclick="editRoom(<?php echo htmlspecialchars(json_encode($room)); ?>)" 
+                                        class="edit-btn">Edit</button>
+                                <button onclick="deleteRoom(<?php echo $room['room_id']; ?>)" 
+                                        class="delete-btn">Delete</button>
+                            </div>
                         </div>
-                    </div>
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <div class="comments-section">
+                <h2>Recent Comments</h2>
+                <div class="comments-list">
+                    <?php foreach($recentComments as $comment): ?>
+                        <div class="comment-card">
+                            <div class="comment-header">
+                                <strong><?php echo htmlspecialchars($comment['username']); ?></strong>
+                                <span>on <?php echo htmlspecialchars($comment['roomtitle']); ?></span>
+                            </div>
+                            <p><?php echo htmlspecialchars($comment['comment']); ?></p>
+                            <small><?php echo date('F j, Y g:i a', strtotime($comment['created_at'])); ?></small>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        function toggleReplyForm(commentId) {
-            const form = document.getElementById(`replyForm-${commentId}`);
-            form.classList.toggle('hidden');
+        function showAddRoomForm() {
+            document.getElementById('roomId').value = '';
+            document.getElementById('roomForm').classList.remove('hidden');
         }
 
-        function confirmDelete(commentId) {
-            if (confirm('Are you sure you want to delete this comment?')) {
-                window.location.href = `process_delete_comment.php?id=${commentId}&room_id=<?php echo $roomId; ?>`;
+        function hideRoomForm() {
+            document.getElementById('roomForm').classList.add('hidden');
+        }
+
+        function editRoom(room) {
+            const form = document.getElementById('roomForm');
+            form.classList.remove('hidden');
+            
+            // Populate form
+            document.getElementById('roomId').value = room.room_id;
+            form.querySelector('[name="roomtitle"]').value = room.roomtitle;
+            form.querySelector('[name="roomprice"]').value = room.roomprice;
+            form.querySelector('[name="roomseats"]').value = room.roomseats;
+            form.querySelector('[name="roomprojectors"]').value = room.roomprojectors;
+        }
+
+        function deleteRoom(roomId) {
+            if(confirm('Are you sure you want to delete this room?')) {
+                window.location.href = `process_delete_room.php?id=${roomId}`;
             }
         }
     </script>
 </body>
-
 </html>
