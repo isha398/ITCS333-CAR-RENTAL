@@ -1,0 +1,30 @@
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    line-height: 1.6;
+}
+@import "_adminstyle.scss";
+
+@import "_analyticsstyle.scss";
+
+@import "_browserroomsstyle.scss";
+
+@import "_roomviewstyle.scss"; 
+
+@import "_herostyle.scss";
+
+@import "_navbarstyle.scss";
+
+@import "_bookingsstyle.scss";
+
+@import "_profilestyle.scss";
+
+@import "_signinstyle.scss";
+
+@import "_signupstyle.scss";

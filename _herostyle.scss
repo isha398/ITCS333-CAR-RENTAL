@@ -1,0 +1,27 @@
+.hero {
+    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+    min-height: 45vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2rem;
+    font-family: 'Roboto', sans-serif;
+}
+
+.hero-content {
+    max-width: 800px;
+    color: white;
+}
+
+.hero h1 {
+    font-size: 3.5rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+}
+
+.hero p {
+    font-size: 1.2rem;
+    margin-bottom: 2rem;
+    opacity: 0.9;
+}
